@@ -21,7 +21,7 @@ const routes = [
       { path: 'products', component: ProductView },
       { path: 'categories', component: CategoryView },
       { path: 'orders', component: OrderView },
-      { path: 'deliveries', component: DeliveryView },
+      { path: 'delivery', component: DeliveryView },
     ]
   }
 ]

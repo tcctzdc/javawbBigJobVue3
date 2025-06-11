@@ -15,7 +15,7 @@
           <li><router-link to="/home/products">商品管理</router-link></li>
           <li><router-link to="/home/categories">分类管理</router-link></li>
           <li><router-link to="/home/orders">订单管理</router-link></li>
-          <li><router-link to="/home/deliveries">配送管理</router-link></li>
+          <li><router-link to="/home/delivery">配送管理</router-link></li>
         </ul>
       </aside>
 

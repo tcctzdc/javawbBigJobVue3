@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import axios from 'axios'
 
@@ -21,6 +21,57 @@ const loading = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const selectedIds = ref<number[]>([])
+const showBatchDelete = ref(false)
+// 分页相关变量
+const currentPage = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
+
+// 搜索条件
+const searchForm = ref({
+  name: '',
+  sortOrder: null as number | null
+})
+
+// 过滤后的分类列表（包含分页）
+const filteredCategories = computed(() => {
+  let result = categories.value
+
+  // 按名称搜索
+  if (searchForm.value.name) {
+    const searchName = searchForm.value.name.toLowerCase()
+    result = result.filter(category => {
+      const matchParent = category.name.toLowerCase().includes(searchName)
+      const matchChildren = category.children?.some(child =>
+          child.name.toLowerCase().includes(searchName)
+      )
+      return matchParent || matchChildren
+    })
+  }
+
+  // 按排序值搜索（只搜索父分类）
+  if (searchForm.value.sortOrder !== null) {
+    result = result.filter(category =>
+        category.sort_order === searchForm.value.sortOrder
+    )
+  }
+
+  // 计算总数（父分类数量）
+  total.value = result.length
+
+  // 对父分类进行分页
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return result.slice(start, end)
+})
+
+// 重置搜索
+const resetSearch = () => {
+  searchForm.value = {
+    name: '',
+    sortOrder: null
+  }
+}
 
 // 分类表单对象
 const form = ref<Category>({
@@ -30,6 +81,18 @@ const form = ref<Category>({
   sort_order: 0,
   status: 1
 })
+
+// 获取父分类序号
+const getParentIndex = (row: Category) => {
+  return categories.value.findIndex(cat => cat.id === row.id) + 1
+}
+
+// 获取子分类序号
+const getChildIndex = (row: Category) => {
+  const parent = categories.value.find(cat => cat.id === row.parent_id)
+  if (!parent || !parent.children) return 0
+  return parent.children.findIndex(child => child.id === row.id) + 1
+}
 
 // 获取分类数据
 const fetchCategories = async () => {
@@ -43,24 +106,26 @@ const fetchCategories = async () => {
     const childRes = await axios.get('http://localhost:8081/api/categories/children')
     const childCategories = childRes.data
 
-    // 对父分类进行排序：启用的在前，禁用的在后，同状态的按 sort_order 排序
+    // 对父分类进行排序：启用的在前，禁用的在后，同状态的按 sort_order 排序（升序）
     const sortedParentCategories = parentCategoriesData.sort((a: Category, b: Category) => {
       if (a.status !== b.status) {
         return b.status - a.status
       }
-      return a.sort_order - b.sort_order
+      return a.sort_order - b.sort_order // 升序，数值小的排在前面
     })
 
-    // 将子分类添加到对应的父分类中
+    // 将子分类添加到对应的父分类中，并对每个父分类下的子分类单独排序
     sortedParentCategories.forEach((parent: Category) => {
-      parent.children = childCategories
+      const children = childCategories
           .filter((child: Category) => child.parent_id === parent.id)
           .sort((a: Category, b: Category) => {
             if (a.status !== b.status) {
               return b.status - a.status
             }
-            return a.sort_order - b.sort_order
+            return a.sort_order - b.sort_order // 升序，数值小的排在前面
           })
+
+      parent.children = children
     })
 
     categories.value = sortedParentCategories
@@ -73,9 +138,30 @@ const fetchCategories = async () => {
   }
 }
 
+// 处理页码变化
+const handlePageChange = (page: number) => {
+  currentPage.value = page
+  fetchCategories()
+}
+
+// 处理每页条数变化
+const handleSizeChange = (size: number) => {
+  pageSize.value = size
+  currentPage.value = 1 // 重置到第一页
+  fetchCategories()
+}
+
+// 切换批量删除模式
+const toggleBatchDelete = () => {
+  showBatchDelete.value = !showBatchDelete.value
+  if (!showBatchDelete.value) {
+    selectedIds.value = []
+  }
+}
+
 // 表格选择变化处理
 const handleSelectionChange = (selection: Category[]) => {
-  selectedIds.value = selection.map((item: Category) => item.id!)
+  selectedIds.value = selection.map(item => item.id!)
 }
 
 // 打开表单
@@ -145,6 +231,7 @@ const deleteBatch = async () => {
     await axios.post('http://localhost:8081/api/categories/batchDelete', selectedIds.value)
     ElMessage.success('批量删除成功')
     selectedIds.value = []
+    showBatchDelete.value = false
     fetchCategories()
   } catch (error: any) {
     if (error !== 'cancel') {
@@ -174,14 +261,32 @@ const updateStatus = async (id: number, status: number, isParent: boolean) => {
 }
 
 // 更新排序
-const updateSortOrder = async (id: number, sortOrder: number) => {
+const updateSortOrder = async (id: number, newSortOrder: number) => {
   try {
-    await axios.put(`http://localhost:8081/api/categories/${id}/sort?sortOrder=${sortOrder}`)
-    ElMessage.success('排序更新成功')
+    // 获取当前分类
+    const currentCategory = categories.value.flatMap(cat =>
+        cat.children ? [cat, ...cat.children] : [cat]
+    ).find(cat => cat.id === id)
+
+    if (!currentCategory) {
+      throw new Error('分类不存在')
+    }
+
+    // 检查新排序值是否在有效范围内
+    if (newSortOrder < 0 || newSortOrder > 999) {
+      throw new Error('排序值必须在0-999之间')
+    }
+
+    // 更新排序
+    await axios.put(`http://localhost:8081/api/categories/${id}/sort?sortOrder=${newSortOrder}`)
+
+    // 重新获取分类列表
     await fetchCategories()
+
+    ElMessage.success('排序更新成功')
   } catch (error: any) {
     console.error('排序更新失败:', error)
-    ElMessage.error('排序更新失败，请重试')
+    ElMessage.error(error.response?.data || '排序更新失败，请重试')
   }
 }
 
@@ -201,14 +306,44 @@ onMounted(() => {
 
 <template>
   <div class="category-container">
+    <!-- 搜索工具栏 -->
+    <div class="search-toolbar">
+      <el-form :inline="true" :model="searchForm" class="search-form">
+        <el-form-item label="分类名称">
+          <el-input
+              v-model="searchForm.name"
+              placeholder="请输入分类名称"
+              clearable
+              @clear="resetSearch"
+          />
+        </el-form-item>
+        <el-form-item label="排序值">
+          <el-input-number
+              v-model="searchForm.sortOrder"
+              :min="0"
+              :max="999"
+              placeholder="请输入排序值"
+              clearable
+              @clear="resetSearch"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="resetSearch">重置</el-button>
+        </el-form-item>
+      </el-form>
+    </div>
+
     <!-- 顶部工具栏 -->
     <div class="toolbar">
       <div class="action-bar">
         <button class="btn btn-primary" @click="openDialog()">
           <i class="fas fa-plus"></i> 添加分类
         </button>
-        <button class="btn btn-danger" @click="deleteBatch" :disabled="!selectedIds.length">
-          <i class="fas fa-trash"></i> 批量删除
+        <button class="btn btn-danger" @click="toggleBatchDelete">
+          <i class="fas fa-trash"></i> {{ showBatchDelete ? '取消批量删除' : '批量删除' }}
+        </button>
+        <button v-if="showBatchDelete" class="btn btn-danger" @click="deleteBatch" :disabled="!selectedIds.length">
+          删除选中 ({{ selectedIds.length }})
         </button>
       </div>
     </div>
@@ -216,35 +351,49 @@ onMounted(() => {
     <!-- 分类列表 -->
     <div class="table-container" v-loading="loading">
       <el-table
-          :data="categories"
+          :data="filteredCategories"
           border
           style="width: 100%"
           @selection-change="handleSelectionChange"
           row-key="id"
           :tree-props="{ children: 'children', hasChildren: 'hasChildren' }"
       >
-        <el-table-column type="selection" width="55" />
-        <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="name" label="分类名称" min-width="200" />
-        <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="sort_order" label="排序" width="150">
+        <el-table-column v-if="showBatchDelete" type="selection" width="55" />
+        <el-table-column label="序号" width="80">
+          <template #default="scope">
+            <template v-if="!scope.row.parent_id">
+              <span class="parent-index">{{ getParentIndex(scope.row) }}</span>
+            </template>
+            <template v-else>
+              <div class="child-index-container">
+                <span class="child-index">{{ getChildIndex(scope.row) }}</span>
+              </div>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column prop="name" label="分类名称" width="180">
+          <template #default="scope">
+            <span v-if="!scope.row.parent_id" class="parent-name">{{ scope.row.name }}</span>
+            <span v-else class="child-name">{{ scope.row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" min-width="200">
+          <template #default="scope">
+            <div class="description-cell">{{ scope.row.description }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="sort_order" label="排序" width="200">
           <template #default="scope">
             <div class="sort-controls">
-              <el-button
+              <el-input-number
+                  v-model="scope.row.sort_order"
+                  :min="0"
+                  :max="999"
                   size="small"
-                  :disabled="scope.row.sort_order <= 0"
-                  @click="updateSortOrder(scope.row.id!, scope.row.sort_order - 1)"
-              >
-                <i class="fas fa-arrow-up"></i>
-              </el-button>
-              <span class="sort-number">{{ scope.row.sort_order }}</span>
-              <el-button
-                  size="small"
-                  :disabled="scope.row.sort_order >= 999"
-                  @click="updateSortOrder(scope.row.id!, scope.row.sort_order + 1)"
-              >
-                <i class="fas fa-arrow-down"></i>
-              </el-button>
+                  @change="(val: number) => updateSortOrder(scope.row.id!, val)"
+                  style="width: 120px;"
+                  controls-position="right"
+              />
             </div>
           </template>
         </el-table-column>
@@ -318,10 +467,32 @@ onMounted(() => {
         <el-button type="primary" @click="submitForm">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 分页组件 -->
+    <div class="pagination-container">
+      <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[5, 10, 15, 20]"
+          layout="total, sizes, prev, pager, next, jumper"
+          @size-change="handleSizeChange"
+          @current-change="handlePageChange"
+      />
+    </div>
   </div>
 </template>
 
 <style scoped>
+/*分页样式*/
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 20px;
+  gap: 20px;
+}
+
 .category-container {
   padding: 2rem;
   background: #fff;
@@ -339,6 +510,7 @@ onMounted(() => {
 .action-bar {
   display: flex;
   gap: 1rem;
+  align-items: center;
 }
 
 /* 按钮样式 */
@@ -355,6 +527,9 @@ onMounted(() => {
   gap: 0.5rem;
   height: 32px;
   line-height: 1;
+  min-width: 120px; /* 增加最小宽度 */
+  width: 120px; /* 增加固定宽度 */
+  white-space: nowrap; /* 防止文字换行 */
 }
 
 .btn-primary {
@@ -383,6 +558,7 @@ onMounted(() => {
 .btn-edit {
   background-color: #67c23a;
   color: white;
+  margin-right: 8px;
 }
 
 .btn-delete {
@@ -406,21 +582,64 @@ onMounted(() => {
 .sort-controls {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: center;
 }
 
-.sort-number {
-  min-width: 40px;
+/* 分类名称样式 */
+.parent-name {
+  font-size: 16px;
+  font-weight: bold;
+  color: #303133;
+}
+
+.child-name {
+  font-size: 14px;
+  color: #606266;
+  padding-left: 20px;
+}
+
+/* 序号样式 */
+.parent-index {
+  font-size: 16px;
+  font-weight: bold;
+  color: #303133;
+  display: inline-block;
+  width: 24px;
+  text-align: left;
+  position: absolute;
+  left: 40px; /* 调整位置到展开图标右侧 */
+}
+
+.child-index-container {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.child-index {
+  font-size: 14px;
+  color: #606266;
+  display: inline-block;
+  width: 24px;
   text-align: center;
 }
 
 /* 表格展开图标样式 */
 :deep(.el-table__expand-icon) {
   margin-right: 8px;
+  position: relative;
 }
 
 :deep(.el-table__expand-icon .el-icon) {
   font-size: 14px;
+}
+
+/* 操作列按钮容器 */
+.el-table .cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px; /* 增加按钮间距 */
 }
 
 /* 响应式设计 */
@@ -436,5 +655,48 @@ onMounted(() => {
   .action-bar .btn {
     width: 100%;
   }
+}
+
+/* 描述单元格样式 */
+.description-cell {
+  padding: 8px;
+  line-height: 1.5;
+  white-space: normal; /* 允许文字换行 */
+  word-break: break-all; /* 允许在任意字符间换行 */
+  min-height: 40px; /* 设置最小高度 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; /* 最多显示两行 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 搜索工具栏样式 */
+.search-toolbar {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: #f5f7fa;
+  border-radius: 8px;
+}
+
+.search-form {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.search-form :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.search-form :deep(.el-input),
+.search-form :deep(.el-input-number) {
+  width: 200px;
+}
+
+/* 分页组件样式 */
+.pagination-container {
+  margin-top: 1rem;
+  text-align: right;
 }
 </style> 
