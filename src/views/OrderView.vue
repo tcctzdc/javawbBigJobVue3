@@ -32,6 +32,7 @@ interface Product {
   parent_category: string
   child_category: string
   category_id: number
+  status: number  // 修改为 number 类型
 }
 
 interface User {
@@ -220,9 +221,10 @@ const fetchProducts = async () => {
   try {
     const res = await axios.get('http://localhost:8081/api/products')
     if (res.data) {
-      // 处理分页响应格式
-      products.value = Array.isArray(res.data) ? res.data : (res.data.products || [])
-      console.log('获取商品列表成功:', res.data)
+      // 处理分页响应格式，并过滤出上架状态的商品（status === 1）
+      const allProducts = Array.isArray(res.data) ? res.data : (res.data.products || [])
+      products.value = allProducts.filter((product: Product) => product.status === 1)
+      console.log('获取商品列表成功:', products.value)
       if (searchQuery.value.parentCategory) {
         filterProductsByCategory()
       }
@@ -355,6 +357,8 @@ const searchProducts = async () => {
     if (searchQuery.value.childCategory) {
       params.append('childCategoryId', searchQuery.value.childCategory.toString())
     }
+    // 添加状态过滤，只获取上架商品
+    params.append('status', 'on_shelf')
 
     console.log('搜索参数:', params.toString())
     const res = await axios.get(`http://localhost:8081/api/products/search?${params.toString()}`)
@@ -397,12 +401,17 @@ const clearSearch = () => {
 // 根据分类过滤商品
 const filterProductsByCategory = () => {
   if (!searchQuery.value.parentCategory) {
-    filteredProducts.value = [...products.value]
+    filteredProducts.value = products.value.filter((product: Product) => product.status === 1)
     return
   }
 
   console.log('开始过滤商品，当前商品列表:', products.value)
   const filtered = products.value.filter((product: Product) => {
+    // 首先过滤掉下架商品
+    if (product.status !== 1) {
+      return false
+    }
+
     if (searchQuery.value.parentCategory && searchQuery.value.childCategory) {
       // 如果同时选择了父类和子类，只显示子类下的商品
       return product.category_id === Number(searchQuery.value.childCategory)
@@ -426,7 +435,7 @@ const searchProductsByKeyword = (keyword: string) => {
   }
 
   const searchResult = filteredProducts.value.filter((product: Product) =>
-      product.name.toLowerCase().includes(keyword.toLowerCase())
+      product.name.toLowerCase().includes(keyword.toLowerCase()) && product.status === 1
   )
   filteredProducts.value = searchResult
 }
@@ -468,11 +477,8 @@ const updateProductsByCategory = async () => {
 
 // 添加商品到新订单
 const addProductToOrder = () => {
-  // 如果没有选择分类，使用所有商品
   if (!searchQuery.value.parentCategory) {
-    filteredProducts.value = [...products.value]
-  } else if (filteredProducts.value.length === 0) {
-    filterProductsByCategory()
+    filteredProducts.value = products.value.filter(product => product.status === 1)
   }
   selectedProducts.value.push({ productId: null, quantity: 1, productText: '' })
 }
