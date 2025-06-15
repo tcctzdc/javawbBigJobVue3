@@ -284,20 +284,23 @@ const validateForm = () => {
 
 // 过滤商品列表
 const filteredProducts = computed(() => {
-  return products.value.filter(p => {
-    const search = searchForm.value
-    const nameMatch = !search.name || p.name.toLowerCase().includes(search.name.toLowerCase())
-    const categoryMatch = !search.category_id || p.category_id === search.category_id
-    const minPriceMatch = !search.minPrice || p.price >= search.minPrice
-    const maxPriceMatch = !search.maxPrice || p.price <= search.maxPrice
-    return nameMatch && categoryMatch && minPriceMatch && maxPriceMatch
-  }).sort((a, b) => {
-    // 保持上架商品在前，下架商品在后的排序
-    if (a.status !== b.status) {
-      return b.status - a.status
-    }
-    return 0
-  })
+  return products.value
+      .filter(p => {
+        const search = searchForm.value
+        const nameMatch = !search.name || p.name.toLowerCase().includes(search.name.toLowerCase())
+        const categoryMatch = !search.category_id || p.category_id === search.category_id
+        const minPriceMatch = !search.minPrice || p.price >= search.minPrice
+        const maxPriceMatch = !search.maxPrice || p.price <= search.maxPrice
+        return nameMatch && categoryMatch && minPriceMatch && maxPriceMatch
+      })
+      .sort((a: Product, b: Product) => {
+        // 首先按状态排序（1在前，0在后）
+        if (a.status !== b.status) {
+          return b.status - a.status
+        }
+        // 如果状态相同，按ID排序
+        return (a.id || 0) - (b.id || 0)
+      })
 })
 
 // 监听搜索条件变化
@@ -315,7 +318,13 @@ const fetchProducts = async () => {
   try {
     const res = await axios.get(`http://localhost:8081/api/products?page=${currentPage.value}&size=${pageSize.value}`)
     console.log('获取到的商品数据:', res.data)
-    products.value = res.data.products
+    // 对商品进行排序，状态为1的在前，状态为0的在后
+    products.value = res.data.products.sort((a: Product, b: Product) => {
+      if (a.status !== b.status) {
+        return b.status - a.status
+      }
+      return (a.id || 0) - (b.id || 0)
+    })
     total.value = res.data.total
     currentPage.value = res.data.currentPage
     pageSize.value = res.data.pageSize
@@ -373,14 +382,14 @@ const getParentCategoryStatus = (categoryId: number) => {
 // 修改状态切换处理函数
 const handleStatusChange = async (product: Product, newStatus: number) => {
   try {
-    // 如果要启用商品，先检查分类状态
-    if (newStatus === 1) {
-      const childCategory = childCategories.value.find(c => c.id === product.category_id)
-      if (!childCategory) {
-        ElMessage.error('无法获取商品分类信息')
-        return
-      }
+    const childCategory = childCategories.value.find(c => c.id === product.category_id)
+    if (!childCategory) {
+      ElMessage.error('无法获取商品分类信息')
+      return
+    }
 
+    // 如果要启用商品
+    if (newStatus === 1) {
       // 检查子分类状态
       if (childCategory.status === 0) {
         ElMessage.warning('该商品所属的子分类已禁用，无法启用商品')
@@ -397,10 +406,30 @@ const handleStatusChange = async (product: Product, newStatus: number) => {
       }
     }
 
-    // 如果检查通过，更新状态
+    // 更新商品状态
     await axios.put(`http://localhost:8081/api/products/${product.id}/status?status=${newStatus}`)
+
+    // 如果商品被禁用，检查是否需要更新分类状态
+    if (newStatus === 0) {
+      // 检查该分类下是否还有其他上架商品
+      const hasActiveProducts = products.value.some(p =>
+          p.category_id === childCategory.id && p.status === 1 && p.id !== product.id
+      )
+
+      // 如果没有其他上架商品，更新分类状态
+      if (!hasActiveProducts) {
+        await axios.put(`http://localhost:8081/api/categories/${childCategory.id}/status?status=0&syncChildren=false&syncProducts=false`)
+      }
+    }
+
+    // 重新获取数据以更新显示
+    await Promise.all([
+      fetchProducts(),
+      fetchParentCategories(),
+      fetchAllChildCategories()
+    ])
+
     ElMessage.success('状态更新成功')
-    await fetchProducts()
   } catch (error: any) {
     console.error('状态更新失败:', error)
     ElMessage.error('状态更新失败，请重试')

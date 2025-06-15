@@ -230,7 +230,7 @@ const handlePageChange = (page: number) => {
 // 生命周期加载数据
 onMounted(api.loadUsers)
 
-// 暴露模板所需变量和方法
+
 const {
   users,
   form,
